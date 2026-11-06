@@ -1,0 +1,31 @@
+/** NIMEX Vehicle P&L API. Bound to the "NIMEX Vehicle P&L Database" spreadsheet.
+ *  Set Script Property ADMIN_KEY (Project Settings > Script Properties). The key is never stored in this file.
+ *  Deploy > New deployment > Web app : Execute as "Me", Who has access "Anyone". Put the /exec URL in config.js */
+var COLS=['month','dcCode','dcName','vehicleCode','plate','vtype','trips','revenue','fuel','driver','repair','installment','net','result'];
+var TEXTC=[1,2,3,4,5,6,14];
+function ss_(){return SpreadsheetApp.getActiveSpreadsheet()}
+function tab_(name,head){var s=ss_(),t=s.getSheetByName(name);if(!t){t=s.insertSheet(name);t.getRange(1,1,1,head.length).setValues([head]).setFontWeight('bold');t.setFrozenRows(1)}return t}
+function rowsTab_(){return tab_('Rows',COLS)}
+function readRows_(){var t=rowsTab_(),n=t.getLastRow();if(n<2)return[];return t.getRange(2,1,n-1,COLS.length).getValues().map(norm_)}
+function norm_(r){return[String(r[0]),String(r[1]),String(r[2]),String(r[3]),String(r[4]),String(r[5]),+r[6]||0,+r[7]||0,+r[8]||0,+r[9]||0,+r[10]||0,+r[11]||0,+r[12]||0,String(r[13])]}
+function writeRows_(rows){var t=rowsTab_(),n=t.getLastRow(),w=COLS.length;if(n>1)t.getRange(2,1,n-1,w).clearContent();if(!rows.length)return;
+ TEXTC.forEach(function(c){t.getRange(2,c,rows.length,1).setNumberFormat('@')});t.getRange(2,1,rows.length,w).setValues(rows.map(norm_))}
+function json_(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
+var CK='vpl-data';
+function cacheGet_(){var c=CacheService.getScriptCache(),n=c.get(CK+'-n');if(!n)return null;var keys=[];for(var i=0;i<+n;i++)keys.push(CK+'-'+i);var all=c.getAll(keys),b='';for(i=0;i<keys.length;i++){if(!all[keys[i]])return null;b+=all[keys[i]]}return Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(b),'application/x-gzip')).getDataAsString('UTF-8')}
+function cachePut_(s){var b=Utilities.base64Encode(Utilities.gzip(Utilities.newBlob(s,'text/plain')).getBytes()),o={},n=0;for(var i=0;i<b.length;i+=90000)o[CK+'-'+(n++)]=b.substr(i,90000);if(n<=90){o[CK+'-n']=String(n);CacheService.getScriptCache().putAll(o,21600)}}
+function cacheClear_(){CacheService.getScriptCache().remove(CK+'-n')}
+function doGet(){var s=null;try{s=cacheGet_()}catch(e){}if(!s){s=JSON.stringify({rows:readRows_()});try{cachePut_(s)}catch(e){}}return ContentService.createTextOutput(s).setMimeType(ContentService.MimeType.JSON)}
+function log_(a,d){tab_('Log',['time','action','detail']).appendRow([new Date(),a,d])}
+function doPost(e){var b;try{b=JSON.parse(e.postData.contents)}catch(x){return json_({ok:false,error:'bad_request'})}
+ var key=PropertiesService.getScriptProperties().getProperty('ADMIN_KEY');if(!key||!b.key||b.key!==key){Utilities.sleep(1200);return json_({ok:false,error:'denied'})}
+ if(b.a==='auth'||b.a==='admin')return json_({ok:true});
+ var lock=LockService.getScriptLock();if(!lock.tryLock(25000))return json_({ok:false,error:'busy'});
+ try{
+  if(b.a==='seed'){writeRows_(b.rows);log_('seed',b.rows.length+' rows')}
+  /* months in the upload replace what is stored for those months */
+  else if(b.a==='upsert'){var set={};b.months.forEach(function(m){set[m]=1});var keep=readRows_().filter(function(r){return !set[r[0]]});writeRows_(keep.concat(b.rows));log_('upsert',b.rows.length+' rows, months '+b.months.join(','))}
+  else if(b.a==='delmonth'){var k2=readRows_().filter(function(r){return r[0]!==b.month});writeRows_(k2);log_('delmonth',b.month)}
+  else return json_({ok:false,error:'unknown'});
+  cacheClear_();return json_({ok:true})
+ }finally{lock.releaseLock()}}
