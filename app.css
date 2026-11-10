@@ -158,3 +158,11 @@ table.ed td:first-child{max-width:none;overflow:visible}table.ed th{padding:9px 
 @media (min-width:640px){.mini{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .btnrow{display:flex;gap:8px;flex-wrap:wrap}
 .btnrow .btn{flex:1 1 160px}
+@media (min-width:960px){.stats.s5{grid-template-columns:repeat(5,minmax(0,1fr))}.grid2.g73{grid-template-columns:7fr 3fr;align-items:stretch}}
+.card.fl{display:flex;flex-direction:column}
+.card.fl .chart.grow{flex:1;display:flex;align-items:center}
+.clist{display:grid;gap:7px;margin-top:auto;padding-top:8px}
+.clist div{display:flex;align-items:center;gap:8px;font-size:13.5px}
+.clist i{width:12px;height:12px;border-radius:3px;flex:0 0 12px}
+.clist b{margin-left:auto;font-weight:600}
+.clist em{font-style:normal;color:var(--muted);width:44px;text-align:right}
