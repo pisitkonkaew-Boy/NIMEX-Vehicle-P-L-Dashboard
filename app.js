@@ -9,11 +9,31 @@ const mergeCode=c=>MERGE[c]||c,mergeName=(c,n)=>MERGE[c]?(RAWNAME[MERGE[c]]||(ME
 const zoneOf=c=>ZONE[c]||'ไม่ระบุภาค';
 /* shared settings from the Settings tab. Grade = อัตรากำไร % of a DC / ภาค, off until the admin turns it on */
 const SETTINGS=DATA.settings||{};
-const GRADE=Object.assign({on:false,A:0,B:-15,C:-30,D:-50},SETTINGS.grade||{});
-const gradeOn=()=>!!GRADE.on;
-const gradeOf=v=>!Number.isFinite(v)?'':v>=GRADE.A?'A':v>=GRADE.B?'B':v>=GRADE.C?'C':v>=GRADE.D?'D':'F';
+/* Weighted grade. Each topic (item) picks a metric from GMET, a weight, and A/B/C/D cut-offs.
+   Item grade → points A4 B3 C2 D1 F0, weighted average → final grade by CUT. Items whose value cannot be
+   computed (e.g. no revenue) are skipped and the remaining weights are re-scaled.
+   To offer a new topic later, add one line to GMET (id, label, unit, higher-is-better, formula on a DC/ภาค total). */
+const GMET=[
+ {id:'margin',l:'อัตรากำไร',u:'%',hi:1,f:x=>x.revenue>0?x.net/x.revenue*100:NaN},
+ {id:'util',l:'อัตราการใช้งานรถ',u:'%',hi:1,f:x=>x.util},
+ {id:'netPerVeh',l:'ผลสุทธิต่อคัน',u:'บาท',hi:1,f:x=>x.vehicleCount?x.net/x.vehicleCount:NaN},
+ {id:'revPerVeh',l:'รายได้ต่อคัน',u:'บาท',hi:1,f:x=>x.vehicleCount?x.revenue/x.vehicleCount:NaN},
+ {id:'lossPct',l:'สัดส่วนรถขาดทุน',u:'%',hi:0,f:x=>x.vehicleCount?x.lossVehicleCount/x.vehicleCount*100:NaN},
+ {id:'costPctRev',l:'ค่าใช้จ่ายต่อรายได้',u:'%',hi:0,f:x=>x.revenue>0?x.cost/x.revenue*100:NaN},
+ {id:'fuelPctRev',l:'ค่าน้ำมันต่อรายได้',u:'%',hi:0,f:x=>x.revenue>0?x.fuel/x.revenue*100:NaN},
+ {id:'repairPerVeh',l:'ค่าซ่อมแซมต่อคัน',u:'บาท',hi:0,f:x=>x.vehicleCount?x.repair/x.vehicleCount:NaN},
+ {id:'instPctCost',l:'ค่างวดรถต่อค่าใช้จ่าย',u:'%',hi:0,f:x=>x.cost>0?x.installment/x.cost*100:NaN}];
+const GRADE_RAW=SETTINGS.grade||{};
+/* older settings held one margin rule {A,B,C,D}; they become a single 100% margin topic, which grades the same way */
+const GRADE={on:!!GRADE_RAW.on,items:Array.isArray(GRADE_RAW.items)&&GRADE_RAW.items.length?GRADE_RAW.items:[{m:'margin',w:100,A:GRADE_RAW.A??0,B:GRADE_RAW.B??-15,C:GRADE_RAW.C??-30,D:GRADE_RAW.D??-50}],cut:Object.assign({A:3.5,B:2.5,C:1.5,D:0.5},GRADE_RAW.cut||{})};
+const gradeOn=()=>GRADE.on&&GRADE.items.some(i=>i.w>0);
+const GPTS={A:4,B:3,C:2,D:1,F:0};
+const itemGrade=(it,v)=>{const g=GMET.find(m=>m.id===it.m);if(!g||!Number.isFinite(v))return'';const ok=t=>g.hi?v>=t:v<=t;return ok(it.A)?'A':ok(it.B)?'B':ok(it.C)?'C':ok(it.D)?'D':'F'};
+const gradeOfPts=p=>!Number.isFinite(p)?'':p>=GRADE.cut.A?'A':p>=GRADE.cut.B?'B':p>=GRADE.cut.C?'C':p>=GRADE.cut.D?'D':'F';
+function gradeDetail(x){if(!x)return null;let sw=0,sp=0;const parts=GRADE.items.filter(i=>i.w>0).map(it=>{const g=GMET.find(m=>m.id===it.m),v=g?g.f(x):NaN,gr=itemGrade(it,v);if(gr){sw+=it.w;sp+=it.w*GPTS[gr]}return{it,g,v,gr}});return{pts:sw?sp/sw:NaN,parts}}
+const gradeSummary=()=>GRADE.items.filter(i=>i.w>0).map(i=>{const g=GMET.find(m=>m.id===i.m);return(g?g.l:i.m)+' '+i.w+'%'}).join(' + ');
 /* a DC or ภาค without revenue has no margin, so it gets no grade */
-const gradeFor=x=>x&&x.revenue>0?gradeOf(x.margin):'';
+const gradeFor=x=>{const d=gradeDetail(x);return d?gradeOfPts(d.pts):''};
 const GCOL={A:'#1d57b8',B:'#6e93d6',C:'#d4af37',D:'#e08a3c',F:'#b8334a'};
 const allData=DATA.rows.map(a=>{const revenue=+a[7],vc=String(a[3]||''),c0=String(a[1]);return{date:String(a[0]),dcCode:mergeCode(c0),dcName:mergeName(c0,String(a[2])),origDc:c0,vehicleCode:vc,plate:String(a[4]),vtype:String(a[5]),trips:+a[6]||0,revenue,fuel:+a[8],driver:+a[9],repair:+a[10],installment:+a[11],net:+a[12],result:String(a[13]),hasRevenue:revenue>0?'มีรายได้':'ไม่มีรายได้',key:a[0]+'|'+(vc||a[4])}});
 allData.forEach(r=>r.zone=zoneOf(r.dcCode));
@@ -61,7 +81,7 @@ function kpiDefs(o){const pc=v=>o.totalCost>0?fmtP(v/o.totalCost*100)+' ขอ�
  {id:'rev',l:'รายได้รวม',v:o.revenue,txt:fmt(o.revenue),sub:`${o.n.toLocaleString('th-TH')} รายการ`,cls:'',b:1,sum:1,u:'บาท',pg:'profit'},
  {id:'cost',l:'ค่าใช้จ่ายรวม',v:o.totalCost,txt:fmt(o.totalCost),sub:'น้ำมัน+คนขับ+ซ่อม+งวดรถ',cls:'',b:-1,sum:1,u:'บาท',pg:'profit'},
  {id:'net',l:'ผลสุทธิรวม',v:o.net,txt:fmtSigned(o.net),sub:o.net>=0?'กำไรสุทธิ':'ขาดทุนสุทธิ',cls:o.net>=0?'good':'bad',b:1,sum:1,u:'บาท',pg:'profit'},
- {id:'margin',l:'อัตรากำไรขั้นต้น',v:o.marginPct,txt:`${o.marginPct.toFixed(1)}%`,sub:'ผลสุทธิ ÷ รายได้'+(gradeOn()?' · เกรด '+gradeOf(o.marginPct):''),cls:o.marginPct>=0?'good':'bad',b:1,u:'จุด',pct:1,pg:'profit'},
+ {id:'margin',l:'อัตรากำไรขั้นต้น',v:o.marginPct,txt:`${o.marginPct.toFixed(1)}%`,sub:'ผลสุทธิ ÷ รายได้',cls:o.marginPct>=0?'good':'bad',b:1,u:'จุด',pct:1,pg:'profit'},
  {id:'fuel',l:'ค่าน้ำมัน',v:o.fuel,txt:fmt(o.fuel),sub:pc(o.fuel),cls:'',b:-1,sum:1,u:'บาท',pg:'profit'},
  {id:'driver',l:'ค่าจ้างคนขับ',v:o.driver,txt:fmt(o.driver),sub:pc(o.driver),cls:'',b:-1,sum:1,u:'บาท',pg:'profit'},
  {id:'repair',l:'ค่าซ่อมแซม',v:o.repair,txt:fmt(o.repair),sub:pc(o.repair),cls:'',b:-1,sum:1,u:'บาท',pg:'profit'},
@@ -77,6 +97,7 @@ function kpiDefs(o){const pc=v=>o.totalCost>0?fmtP(v/o.totalCost*100)+' ขอ�
  {id:'repv',l:'ค่าซ่อมแซมต่อคัน',v:o.repairPerVehicle,txt:fmt(o.repairPerVehicle),sub:'ค่าซ่อมแซม ÷ จำนวนรถ',cls:o.repairPerVehicle>0?'bad':'',b:-1,u:'บาท',unit:'บาท'}]}
 const NCARD=12;
 function kpiData(){const rows=applyFilters(),o=kpiCalc(rows),p=prevSpec(),q=p?kpiCalc(applyFilters({m:p.m})):null,L=kpiDefs(o),PL=q?kpiDefs(q):null;
+ if(gradeOn()){const g=gradeFor(allAgg(rows)),mk=L.find(k=>k.id==='margin');if(g&&mk){mk.sub+=' · เกรด '+g;mk.grade=g}}
  L.forEach((k,i)=>{k.up=null;k.d='';if(!q)return;let cv=k.v,pv=PL[i].v;if(k.sum&&S.mode==='cumulative'){cv/=p.nc;pv/=p.n}const dl=cv-pv;k.dl=dl;k.prev=PL[i].txt;
   if(!Number.isFinite(dl))return;if(Math.abs(dl)<(k.pct?0.05:0.5)){k.d='= เท่าเดิม';k.up=null;return}
   k.up=k.b===0?null:(k.b>0?dl>0:dl<0);k.d=(dl>0?'▲ ':'▼ ')+(k.pct?fmtN(Math.abs(dl),1):fmt(Math.abs(dl)))+' '+k.u});
@@ -191,7 +212,7 @@ function table(id,cols,data,opts={}){
 const tagR=v=>`<span class="tag ${v==='ขาดทุน'?'':'ok'}">${esc(v||'-')}</span>`;
 const tagT=v=>`<span class="tag mut">${esc(v||'-')}</span>`;
 const DCCOLS=()=>[{k:'dcName',t:'DC',v:x=>x.dcName,dir:'text'},{k:'vehicleCount',t:'คัน',v:x=>x.vehicleCount,txt:x=>x.vehicleCount.toLocaleString('th-TH'),dir:'high'},{k:'monthCount',t:'เดือนที่มีข้อมูล',v:x=>x.monthCount,dir:'high'},{k:'revenue',t:'รายได้รวม',v:x=>x.revenue,txt:x=>fmt(x.revenue),dir:'high'},{k:'cost',t:'ค่าใช้จ่ายรวม',v:x=>x.cost,txt:x=>fmt(x.cost),dir:'low'},{k:'net',t:'ผลสุทธิ',v:x=>x.net,txt:x=>fmtSigned(x.net),dir:'high',heat:1},{k:'avgNetPerVehicle',t:'เฉลี่ยผลสุทธิ/คัน',v:x=>x.avgNetPerVehicle,txt:x=>fmtSigned(x.avgNetPerVehicle),dir:'high',heat:1},{k:'margin',t:'อัตรากำไร %',v:x=>x.margin,txt:x=>x.margin.toFixed(1)+'%',dir:'high',heat:1},{k:'lossVehicleCount',t:'รถขาดทุน',v:x=>x.lossVehicleCount,txt:x=>x.lossVehicleCount.toLocaleString('th-TH'),dir:'low'},{k:'status',t:'สถานะ',v:x=>x.status,html:x=>tagR(x.status),dir:'status'},...gradeCol()];
-const gradeCol=()=>gradeOn()?[{k:'grade',t:'เกรด',v:x=>gradeFor(x),html:x=>{const g=gradeFor(x);return g?`<b style="color:${GCOL[g]}">${g}</b>`:'–'},dir:'text'}]:[];
+const gradeCol=()=>gradeOn()?[{k:'grade',t:'เกรด',v:x=>gradeFor(x),html:x=>{const g=gradeFor(x),d=gradeDetail(x);return g?`<b style="color:${GCOL[g]}" title="${esc(d.parts.map(p=>(p.g?p.g.l:'')+': '+(p.gr||'–')).join(' · '))}">${g}</b>`:'–'},dir:'text'}]:[];
 const VEHCOLS=()=>[{k:'plate',t:'ทะเบียนรถ',v:x=>x.plate,dir:'text'},{k:'dcName',t:'DC',v:x=>x.dcName,dir:'text'},{k:'vtype',t:'ประเภทรถ',v:x=>x.vtype,html:x=>tagT(x.vtype),dir:'text'},{k:'monthCount',t:'เดือนที่มีข้อมูล',v:x=>x.monthCount,dir:'high'},{k:'revenue',t:'รายได้รวม',v:x=>x.revenue,txt:x=>fmt(x.revenue),dir:'high'},{k:'cost',t:'ค่าใช้จ่ายรวม',v:x=>x.cost,txt:x=>fmt(x.cost),dir:'low'},{k:'net',t:'ผลสุทธิ',v:x=>x.net,txt:x=>fmtSigned(x.net),dir:'high',heat:1},{k:'margin',t:'อัตรากำไร %',v:x=>x.margin,txt:x=>x.margin.toFixed(1)+'%',dir:'high',heat:1},{k:'lossMonths',t:'เดือนขาดทุน',v:x=>x.lossMonths,dir:'low'},{k:'status',t:'สถานะ',v:x=>x.status,html:x=>tagR(x.status),dir:'status'}];
 const RECCOLS=()=>[{k:'date',t:'เดือน',v:r=>r.date,txt:r=>thMonthLabel(r.date),dir:'text'},{k:'dcName',t:'DC',v:r=>r.dcName,dir:'text'},{k:'plate',t:'ทะเบียนรถ',v:r=>r.plate,dir:'text'},{k:'vtype',t:'ประเภทรถ',v:r=>r.vtype,html:r=>tagT(r.vtype),dir:'text'},{k:'trips',t:'เที่ยววิ่ง',v:r=>r.trips,txt:r=>fmt(r.trips),dir:'high'},{k:'revenue',t:'รายได้',v:r=>r.revenue,txt:r=>fmt(r.revenue),dir:'high'},{k:'fuel',t:'ค่าน้ำมัน',v:r=>r.fuel,txt:r=>fmt(r.fuel),dir:'low'},{k:'driver',t:'ค่าจ้างคนขับ',v:r=>r.driver,txt:r=>fmt(r.driver),dir:'low'},{k:'repair',t:'ค่าซ่อมแซม',v:r=>r.repair,txt:r=>fmt(r.repair),dir:'low'},{k:'installment',t:'ค่างวดรถ',v:r=>r.installment,txt:r=>fmt(r.installment),dir:'low'},{k:'hasRevenue',t:'สถานะรายได้',v:r=>r.hasRevenue,html:r=>`<span class="tag ${r.hasRevenue==='มีรายได้'?'ok':''}">${r.hasRevenue}</span>`,dir:'status2'},{k:'net',t:'ผลสุทธิ',v:r=>r.net,txt:r=>fmtSigned(r.net),dir:'high',heat:1},{k:'result',t:'กำไร-ขาดทุน',v:r=>r.result,html:r=>tagR(r.result),dir:'status'}];
 
@@ -329,6 +350,14 @@ function parseSheetRows(rows){const header=rows[0].map(h=>(h||'').toString().tri
   out.push([dateStr,dcCode,dcName,vehicleCode,plate,(row[iVType]||'').toString().trim(),row[iTrips]!==undefined?(parseFloat(row[iTrips])||0):0,normNum(row[iRevenue]),normNum(row[iFuel]),normNum(row[iDriver]),normNum(row[iRepair]),normNum(row[iInstallment]),normNum(row[iNet]),(row[iResult]||'').toString().trim()])}
  return out}
 const SET={plan:null,msg:'',del:''};
+/* grade topics being edited (copied from the saved settings) */
+let GEDIT=GRADE.items.map(x=>({...x}));
+function gItemsHtml(){const tw=GEDIT.reduce((s,x)=>s+(+x.w||0),0);
+ return GEDIT.map((it,i)=>{const g=GMET.find(m=>m.id===it.m)||GMET[0];return`<div class="card" style="padding:12px;margin:8px 0;box-shadow:none"><div class="tools" style="margin:0 0 8px"><select data-gi="${i}" data-gk="m" aria-label="หัวข้อที่ ${i+1}">${GMET.map(m=>`<option value="${m.id}"${m.id===it.m?' selected':''}>${esc(m.l)} (${m.u} · ${m.hi?'สูง = ดี':'ต่ำ = ดี'})</option>`).join('')}</select><label style="display:flex;align-items:center;gap:6px">น้ำหนัก <input type="number" min="0" max="100" step="1" style="width:80px" data-gi="${i}" data-gk="w" value="${it.w}" aria-label="น้ำหนักหัวข้อที่ ${i+1}"> %</label><button class="btn alt" style="min-height:34px;padding:4px 12px" data-set="gdel:${i}" aria-label="ลบหัวข้อที่ ${i+1}">ลบ</button></div>
+  <div class="mini">${['A','B','C','D'].map(k=>`<label class="stat"><span>เกรด ${k} เมื่อ ${g.hi?'≥':'≤'} (${g.u})</span><input type="number" step="any" data-gi="${i}" data-gk="${k}" value="${it[k]??''}" aria-label="หัวข้อที่ ${i+1} เกณฑ์ ${k}"></label>`).join('')}</div></div>`}).join('')+`<p class="${tw===100?'note':'badt'}" style="margin:4px 0">น้ำหนักรวม ${tw}%${tw===100?'':' (ต้องรวมได้ 100%)'}</p>`}
+const GDEF={margin:[0,-15,-30,-50],util:[90,80,70,60],netPerVeh:[0,-5000,-10000,-20000],revPerVeh:[40000,30000,20000,10000],lossPct:[20,40,60,80],costPctRev:[100,115,130,150],fuelPctRev:[40,50,60,70],repairPerVeh:[2000,5000,8000,12000],instPctCost:[20,30,40,50]};
+function gRefresh(){const b=document.getElementById('g-items');if(b)b.innerHTML=gItemsHtml()}
+document.addEventListener('change',e=>{const t=e.target;if(t.dataset.gi===undefined)return;const it=GEDIT[+t.dataset.gi],k=t.dataset.gk;if(k==='m'){it.m=t.value;const d=GDEF[t.value]||[0,0,0,0];['A','B','C','D'].forEach((x,j)=>it[x]=d[j]);gRefresh()}else{it[k]=t.value===''?'':+t.value;if(k==='w')gRefresh()}});
 /* Index file: columns DC code | DC name | Zone (| merge into DC). A DC merged earlier keeps its merge when the new file has no such column */
 function parseZones(rows){const h=(rows[0]||[]).map(x=>String(x||'').trim().toLowerCase()),iz=h.findIndex(x=>x==='zone'||x==='ภาค');if(iz<0)return null;const im=h.findIndex(x=>x.includes('รวม')||x==='mergeto'),out=new Map();
  for(let i=1;i<rows.length;i++){const r=rows[i]||[],c=r[0]==null?'':String(r[0]).trim().replace(/\.0+$/,'');if(!c)continue;const m=c.match(/^(\d+)/);out.set(m?m[1]:c,[m?m[1]:c,String(r[1]||'').trim(),String(r[iz]||'').trim(),im>=0&&r[im]!=null?String(r[im]).trim().replace(/\.0+$/,''):''])}
@@ -352,10 +381,12 @@ function renderSet(){const b=document.getElementById('set-up');if(b)b.innerHTML=
 function monthsHtml(){return`<div class="tw"><table class="t"><thead><tr><th>เดือน</th><th>รายการ</th><th>คัน</th><th>รายได้</th><th>ผลสุทธิ</th><th>ลบ</th></tr></thead><tbody>${months.map(m=>{const R=allData.filter(r=>r.date===m);return`<tr><td>${thMonthLabel(m)}</td><td>${fmt(R.length)}</td><td>${fmt(new Set(R.map(vk)).size)}</td><td>${fmt(R.reduce((s,r)=>s+r.revenue,0))}</td><td>${fmtSigned(R.reduce((s,r)=>s+r.net,0))}</td><td><button class="btn alt" style="min-height:32px;padding:4px 10px" data-set="del:${m}">${SET.del===m?'กดอีกครั้งเพื่อยืนยัน':'ลบเดือนนี้'}</button></td></tr>`}).join('')}</tbody></table></div>`}
 VIEW.settings=()=>`${header('ตั้งค่า','เห็นเฉพาะผู้ดูแลระบบ')}
  <section class="card"><h2>เติมไฟล์</h2><p class="note">เลือกไฟล์ .xlsx รูปแบบเดิม (เลือกหลายไฟล์ได้) ระบบอ่านในเครื่องนี้และสรุปให้ตรวจก่อนบันทึก เดือนที่มีอยู่แล้วจะลบของเดิมแล้วใช้ไฟล์ใหม่ · ไฟล์ภาค (Index.xlsx มีคอลัมน์ Zone) เลือกช่องเดียวกันนี้ได้ ระบบจะแทนตารางภาคทั้งชุด</p><input type="file" id="up-file" accept=".xlsx,.xls,.json" multiple aria-label="เลือกไฟล์ข้อมูล"><div id="set-up" style="display:grid;gap:10px;margin-top:10px">${SET.msg?`<p class="msg">${esc(SET.msg)}</p>`:''}${planHtml()}</div></section>
- <section class="card"><h2>เกณฑ์เกรด</h2><p class="note">ให้เกรด DC และภาคตามอัตรากำไร % (ผลสุทธิ ÷ รายได้) · ตอนนี้${gradeOn()?'เปิดใช้อยู่':'ปิดอยู่'} · ทุกคนที่เปิดเว็บจะเห็นตามนี้</p>
- <label style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" id="g-on"${gradeOn()?' checked':''}> แสดงเกรด</label>
- <div class="mini">${['A','B','C','D'].map(g=>`<label class="stat"><span>เกรด ${g} เมื่ออัตรากำไร ≥ (%)</span><input type="number" step="0.1" id="g-${g}" value="${GRADE[g]}" aria-label="เกณฑ์เกรด ${g}"></label>`).join('')}</div><p class="note">ต่ำกว่าเกณฑ์ D = เกรด F · ค่าต้องเรียงจากมากไปน้อย A ≥ B ≥ C ≥ D</p>
- <button class="btn" data-set="grade" style="width:100%">บันทึกเกณฑ์เกรด</button><p class="msg" id="g-msg" role="status"></p></section>
+ <section class="card"><h2>เกณฑ์เกรด</h2><p class="note">ให้เกรด DC และภาคจากหลายหัวข้อแบบถ่วงน้ำหนัก · ตอนนี้${gradeOn()?'เปิดใช้อยู่':'ปิดอยู่'} · ทุกคนที่เปิดเว็บจะเห็นตามนี้</p>
+ <label style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" id="g-on"${GRADE.on?' checked':''}> แสดงเกรด</label><div id="g-items">${gItemsHtml()}</div>
+ <div class="btnrow"><button class="btn alt" data-set="gadd">+ เพิ่มหัวข้อ</button></div>
+ <p class="note" style="margin-top:10px">แต่ละหัวข้อให้เกรด A–F แล้วแปลงเป็นคะแนน A=4 B=3 C=2 D=1 F=0 เฉลี่ยตามน้ำหนัก แล้วตัดเกรดรวมตามคะแนนด้านล่าง หัวข้อที่คำนวณไม่ได้ (เช่น DC ไม่มีรายได้) จะข้ามไปและเฉลี่ยน้ำหนักที่เหลือ</p>
+ <div class="mini">${['A','B','C','D'].map(g=>`<label class="stat"><span>เกรดรวม ${g} เมื่อคะแนน ≥</span><input type="number" step="0.1" min="0" max="4" id="gc-${g}" value="${GRADE.cut[g]}" aria-label="คะแนนขั้นต่ำเกรดรวม ${g}"></label>`).join('')}</div>
+ <button class="btn" data-set="grade" style="width:100%;margin-top:10px">บันทึกเกณฑ์เกรด</button><p class="msg" id="g-msg" role="status"></p></section>
  <section class="card"><h2>ข้อมูลในระบบ</h2><p class="note">${fmt(allData.length)} รายการ · ${months.length} เดือน</p>${monthsHtml()}</section>
  <section class="card"><h2>ส่งออกข้อมูล</h2><p class="note">ส่งออก Excel, PowerPoint, PNG, อินโฟกราฟิก หรือข้อมูลรายการทั้งหมดตามตัวกรองด้านบน</p><div class="btns"><button class="btn" data-act="export">แชร์และส่งออก</button><button class="btn alt" data-act="doall">ข้อมูลรายการ (Excel)</button></div><p class="msg" id="xmsg" role="status"></p></section>
  <section class="card"><button class="btn alt" data-set="logout" style="width:100%">ออกจากระบบผู้ดูแล</button></section>`;
@@ -370,8 +401,14 @@ document.addEventListener('change',e=>{const t=e.target;if(t.id==='up-file'&&t.f
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-set]');if(!b)return;const[a,v]=b.dataset.set.split(':');
  if(a==='commit')commitFiles();
  if(a==='del'){if(SET.del!==v){SET.del=v;render(true);return}b.disabled=true;b.textContent='กำลังลบ…';try{await api({a:'delmonth',month:v});location.reload()}catch(x){b.textContent='ลบไม่สำเร็จ'}}
- if(a==='grade'){const g={on:document.getElementById('g-on').checked};const m=document.getElementById('g-msg');for(const k of ['A','B','C','D']){const v=parseFloat(document.getElementById('g-'+k).value);if(!Number.isFinite(v)){m.textContent='กรอกตัวเลขให้ครบทุกเกรด';return}g[k]=v}
-  if(!(g.A>=g.B&&g.B>=g.C&&g.C>=g.D)){m.textContent='เกณฑ์ต้องเรียงจากมากไปน้อย A ≥ B ≥ C ≥ D';return}b.disabled=true;m.textContent='กำลังบันทึก…';try{await api({a:'settings',data:{grade:g}});m.textContent='บันทึกแล้ว กำลังโหลดใหม่…';setTimeout(()=>location.reload(),600)}catch(x){m.textContent='บันทึกไม่สำเร็จ: '+x.message;b.disabled=false}}
+ if(a==='gadd'){const used=new Set(GEDIT.map(x=>x.m)),m=(GMET.find(x=>!used.has(x.id))||GMET[0]).id,d=GDEF[m]||[0,0,0,0];GEDIT.push({m,w:0,A:d[0],B:d[1],C:d[2],D:d[3]});gRefresh();return}
+ if(a==='gdel'){GEDIT.splice(+v,1);gRefresh();return}
+ if(a==='grade'){const m=document.getElementById('g-msg'),on=document.getElementById('g-on').checked,cut={};for(const k of ['A','B','C','D']){const x=parseFloat(document.getElementById('gc-'+k).value);if(!Number.isFinite(x)){m.textContent='กรอกคะแนนเกรดรวมให้ครบ';return}cut[k]=x}
+  if(!(cut.A>=cut.B&&cut.B>=cut.C&&cut.C>=cut.D)){m.textContent='คะแนนเกรดรวมต้องเรียง A ≥ B ≥ C ≥ D';return}
+  if(!GEDIT.length){m.textContent='ต้องมีอย่างน้อย 1 หัวข้อ';return}const tw=GEDIT.reduce((s,x)=>s+(+x.w||0),0);if(tw!==100){m.textContent='น้ำหนักรวมต้องเท่ากับ 100% (ตอนนี้ '+tw+'%)';return}
+  for(const [i,it] of GEDIT.entries()){const g=GMET.find(x=>x.id===it.m);if(['A','B','C','D'].some(k=>!Number.isFinite(it[k]))){m.textContent='หัวข้อที่ '+(i+1)+': กรอกเกณฑ์ให้ครบ';return}const ok=g.hi?(it.A>=it.B&&it.B>=it.C&&it.C>=it.D):(it.A<=it.B&&it.B<=it.C&&it.C<=it.D);if(!ok){m.textContent='หัวข้อที่ '+(i+1)+' ('+g.l+'): เกณฑ์ต้องเรียง'+(g.hi?'จากมากไปน้อย':'จากน้อยไปมาก')+' A → D';return}}
+  if(new Set(GEDIT.map(x=>x.m)).size!==GEDIT.length){m.textContent='มีหัวข้อซ้ำกัน';return}
+  b.disabled=true;m.textContent='กำลังบันทึก…';try{await api({a:'settings',data:{grade:{on,items:GEDIT.map(x=>({m:x.m,w:+x.w,A:+x.A,B:+x.B,C:+x.C,D:+x.D})),cut}}});m.textContent='บันทึกแล้ว กำลังโหลดใหม่…';setTimeout(()=>location.reload(),600)}catch(x){m.textContent='บันทึกไม่สำเร็จ: '+x.message;b.disabled=false}}
  if(a==='logout'){try{sessionStorage.removeItem(KEY_NAME)}catch(x){}location.hash='';location.reload()}});
 document.getElementById('ov').addEventListener('click',e=>{if(e.target.id==='ov')closeSheet()});
 render();
